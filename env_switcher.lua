@@ -85,6 +85,9 @@ for i, env in ipairs(cfg.environments) do
     elseif id == "___ROOT___" then
         log(("___ROOT___ is internal environment ID, that is reserved. Skipping environment #%s"):format(i), "ERROR");
         goto continue
+    elseif environments[id] ~= nil then
+        log(("Environment with id %s already exists. Skipping environment #%s."):format(id, i), "ERROR");
+        goto continue
     end
     
     if env.default then
@@ -98,21 +101,24 @@ for i, env in ipairs(cfg.environments) do
 
     local env_models = {};
 
-    for _, model_name in ipairs(env.models or {}) do
-        local model = models[model_name];
-        if model ~= nil then
-            models:removeChild(model);
-            env_models[#env_models+1] = model;
+    -- Moving specified models to this environment.
+    if type(env.models) == "table" then
+        for _, model_name in ipairs(env.models) do
+            local model = models[model_name];
+            if model ~= nil then
+                models:removeChild(model);
+                env_models[#env_models+1] = model;
+            end
         end
     end
 
     local model_root = models:newPart(id);
 
-    local senv = {
+    local script_environment = {
         models = model_root
     };
 
-
+    -- Adding environment models to model root of this environment
     for _, model in ipairs(env_models) do
         model_root:addChild(model);
     end
@@ -136,10 +142,10 @@ for i, env in ipairs(cfg.environments) do
         script_dirs = script_dirs,
         action_wheel = nil,
         events = {},
-        env = senv,
+        env = script_environment,
         model_root = model_root,
         root_visibility = true,
-        auto_scripts= env.auto_scripts or {},
+        auto_scripts = env.auto_scripts or {},
         initialized = false
     };
 
@@ -172,12 +178,27 @@ environments.___ROOT___ = {
 
 --#endregion
 
+-- Making all models in avatar root invisible
+-- Roots of environments will be made visible on initialized
+-- All other models, that are not in environments, shouldn't be visible
 for _, model in ipairs(models:getChildren()) do
     model:setVisible(false);
 end
 
+---Returns id of the current active environment
+---@return string
 function environment_id()
     return active_environment or "___ROOT___"
+end
+
+---Returns list of all available environments ids
+---@return string[]
+function environments_list()
+    local envs = {}
+    for _, value in ipairs(environment_ids) do
+        envs[#envs+1] = value;
+    end
+    return envs;
 end
 
 --#region REDEFINING EVENT CLASS BEHAVIOR
@@ -305,6 +326,91 @@ local environment_init_error = [[Error ocurred during initialization of environm
 %s
 This environment has been removed from your runtime.]];
 
+local env_control = {};
+
+function env_control.remove_env(name)
+    environments[name] = nil;
+    for i = 1, #environment_ids, 1 do
+        if environment_ids[i] == name then
+            environment_ids[i] = nil;
+            return;
+        end
+    end
+end
+
+---@param env EnvTable Environment
+function env_control.init_env(env)
+    -- Environment root is always not nil, except for ___ROOT___, which is never going through initialization.
+    local model_root = env.model_root --[[@as ModelPart]];
+    -- Setting root visibility to true at first initialization of environment
+    model_root:setVisible(true);
+
+    log(("Initializing %s"):format(env.id), "DEBUG");
+    -- Initializing autoscripts
+    for _, script_name in ipairs(env.auto_scripts) do
+        -- Using the env_require function to properly setup script environment and etc.
+        local success, error = pcall(env_require, script_name);
+        -- If error occurred during initialization of any script - removing the environment. 
+        if not success then
+            log(environment_init_error:format(active_environment, error or "UNKNOWN"), "ERROR", active_environment);
+            env_control.remove_env(env.id);
+            switch_environment(); -- Switching to root
+            return;
+        end
+    end
+    env.initialized = true;
+end
+
+---@param env EnvTable Environment
+function env_control.load_env(env)
+    if not env.initialized then
+        env_control.init_env(env);
+    else
+        -- Registering events for this environment
+        local handlers = env.events;
+        for event, handlers in pairs(handlers) do
+            for _, handler in ipairs(handlers) do
+                old_event.register(event, handler.f, handler.n);
+            end
+        end
+        
+        -- Restoring action wheel page
+        action_wheel:setPage(env.action_wheel);
+
+        -- Restoring environment root visibility state
+        local model_root = env.model_root;
+        if model_root ~= nil then
+            print("mrrrp");
+            model_root:setVisible(env.root_visibility);
+        end
+    end
+end
+
+---@param env EnvTable Environment
+function env_control.unload_env(env)
+    -- Unregistering current environment events
+    for event, _ in pairs(env.events) do
+        old_event.clear(event);
+    end
+    -- Saving current action wheel page
+    env.action_wheel = action_wheel:getCurrentPage();
+
+    local model_root = env.model_root;
+    if model_root ~= nil then -- Checking if environment root is nil (for example, for ___ROOT___ it is nil)
+        local visible = model_root:getVisible();
+        -- Saving visibility state of this environment root
+        env.root_visibility = visible;
+        model_root:setVisible(false);
+    end
+
+    -- Setting current action wheel page to nil
+    action_wheel:setPage(nil);
+end
+
+local function current_env()
+    return environments[environment_id()]
+end
+
 ---Switches the current environment
 ---@param name string? ID of the environment. Default - id of the root environment;
 function switch_environment(name)
@@ -312,50 +418,15 @@ function switch_environment(name)
     if env_name == name then
         return;
     end
-    local cur_env = environments[environment_id()];
-    for event, _ in pairs(cur_env.events) do
-        old_event.clear(event);
-    end
-    cur_env.action_wheel = action_wheel:getCurrentPage();
-    local m = cur_env.model_root;
-    if m ~= nil then
-        local visible = m:getVisible();
-        cur_env.root_visibility = visible;
-        m:setVisible(false);
-    end
 
-    action_wheel:setPage(nil);
+    local old_env = current_env();
+    env_control.unload_env(old_env);
 
     active_environment = name or "___ROOT___";
 
-    local new_env = environments[active_environment];
+    local new_env = current_env();
 
-    if not new_env.initialized then
-        log(("Initializing %s"):format(name), "DEBUG");
-        for _, script_name in ipairs(new_env.auto_scripts) do
-            local success, error = pcall(env_require, script_name);
-            if not success then
-                log(environment_init_error:format(active_environment, error or "UNKNOWN"), "ERROR", active_environment);
-                switch_environment();
-                return;
-            end
-        end
-        new_env.initialized = true;
-    else
-        local handlers = new_env.events;
-        for event, handlers in pairs(handlers) do
-            for _, handler in ipairs(handlers) do
-                old_event.register(event, handler.f, handler.n);
-            end
-        end
-
-        action_wheel:setPage(new_env.action_wheel);
-    end
-
-    local m = new_env.model_root;
-    if m ~= nil then
-        m:setVisible(new_env.root_visibility);
-    end
+    env_control.load_env(new_env);
 
     log("Switched environment", "DEBUG", active_environment);
 end

@@ -62,4 +62,5 @@ Before starting actually setting up your avatar, you need to configure the EnvSw
 
 ## EnvSwitcher functions
 * `switch_environment(id: string?)` - Switches the current environment. Id is the id of environment you will be switched to. Providing `nil` or id of environment that doesn't exist will cause switching to root environment, which's only purpose is having an action wheel that can be used to switch between registered environments.
-* `environmend_id() -> string` - Returns the id of current environment.
+* `environment_id() -> string` - Returns the id of current environment.
+* `environment_list() -> string[]` - Returns the list of available environment ids.
