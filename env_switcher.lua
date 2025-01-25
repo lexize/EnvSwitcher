@@ -54,13 +54,15 @@ log("Debug mode is active", "DEBUG");
 
 --#region PARSING CONFIG
 local global_script_dirs = cfg.global_script_dirs or {};
+local scripts_dir = cfg.script_dir or ".scripts";
+local unix_path_format = cfg.unix_path_format;
 
 log(("Global script directories: [ %s ]"):format(table.concat(global_script_dirs, ", ")), "DEBUG");
 
 ---@class EnvTable
 ---@field id string
 ---@field requires table<string, any[]>
----@field script_dir string
+---@field script_dirs string[]
 ---@field action_wheel Page?
 ---@field events table<Event, {f: function, n: string}[]>
 ---@field env table
@@ -106,8 +108,6 @@ for i, env in ipairs(cfg.environments) do
 
     local model_root = models:newPart(id);
 
-    model_root:setVisible(false);
-
     local senv = {
         models = model_root
     };
@@ -117,11 +117,23 @@ for i, env in ipairs(cfg.environments) do
         model_root:addChild(model);
     end
 
+    local script_dirs = {};
+
+    if env.script_dirs ~= nil then
+        for _, dir in ipairs(env.script_dirs) do
+            script_dirs[#script_dirs+1] = dir;
+        end
+    elseif env.script_dir ~= nil then
+        if type(env.script_dir == "string") then
+            script_dirs[1] = env.script_dir;
+        end
+    end
+
     ---@type EnvTable
     local env_table = {
         id = id,
         requires = {},
-        script_dir = env.script_dir or id,
+        script_dirs = script_dirs,
         action_wheel = nil,
         events = {},
         env = senv,
@@ -149,7 +161,7 @@ end
 environments.___ROOT___ = {
     id = "___ROOT___",
     requires = {},
-    script_dir = "",
+    script_dirs = {},
     action_wheel = nil,
     events = {},
     env = {},
@@ -159,6 +171,10 @@ environments.___ROOT___ = {
 }
 
 --#endregion
+
+for _, model in ipairs(models:getChildren()) do
+    model:setVisible(false);
+end
 
 function environment_id()
     return active_environment or "___ROOT___"
@@ -233,6 +249,19 @@ figuraMetatables.EventsAPI.__newindex = function (events, key, func)
 end
 --#endregion
 
+---Returns path components
+---@param path string
+---@return string[]
+local function path_components(path)
+    local components = {};
+    for value in string.gmatch(path.."/", "(.-)/") do
+        if #value ~= 0 then
+            components[#components+1] = value;
+        end
+    end
+    return components;
+end
+
 --#region ENVIRONMENT CONTROL FUNCTIONS
 local function env_require(name)
     local env = environments[active_environment];
@@ -242,16 +271,22 @@ local function env_require(name)
     if req ~= nil then
         return table.unpack(req);
     else
-        local dirs = {env.script_dir, table.unpack(global_script_dirs)};
+        local dirs = {table.unpack(env.script_dirs), table.unpack(global_script_dirs)};
         for _, dir in ipairs(dirs) do
+            local script_path;
             local global_path;
             if #dir == 0 then
                 global_path = name;
             else
                 global_path = dir .. "/" .. name;
             end
-            local normalized_path = ".scripts/" .. string.gsub(global_path, "%.", "/") .. ".lua";
-            local script_content = load_res(normalized_path);
+            if unix_path_format then
+                local path_comps = path_components(scripts_dir .. "/" .. global_path .. ".lua");
+                script_path = table.concat(path_comps, "/");
+            else
+                script_path = scripts_dir .. "/" .. string.gsub(global_path, "%.", "/") .. ".lua";
+            end
+            local script_content = load_res(script_path);
             if script_content ~= nil then
                 local f, err = load(script_content, global_path, setmetatable(script_env, {__index=_G}));
                 if (f == nil) then
