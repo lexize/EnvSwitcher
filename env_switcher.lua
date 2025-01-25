@@ -1,4 +1,5 @@
 local cfg; -- Config struct
+local env_control = {};
 
 local log_colors = {
     INFO = "#55FF55",
@@ -69,6 +70,8 @@ log(("Global script directories: [ %s ]"):format(table.concat(global_script_dirs
 ---@field model_root? ModelPart
 ---@field root_visibility boolean
 ---@field auto_scripts string[]
+---@field avatar_vars table<string, any>
+---@field pings table<string, function>
 ---@field initialized boolean
 
 local active_environment;
@@ -146,6 +149,8 @@ for i, env in ipairs(cfg.environments) do
         model_root = model_root,
         root_visibility = true,
         auto_scripts = env.auto_scripts or {},
+        avatar_vars = {},
+        pings = {},
         initialized = false
     };
 
@@ -173,6 +178,8 @@ environments.___ROOT___ = {
     env = {},
     root_visibility = false,
     auto_scripts = {},
+    avatar_vars = {},
+    pings = {},
     initialized = true
 }
 
@@ -270,6 +277,24 @@ figuraMetatables.EventsAPI.__newindex = function (events, key, func)
 end
 --#endregion
 
+--#region REDEFINING PING CLASS BEHAVIOR
+local old_ping_set = figuraMetatables.PingAPI.__newindex;
+
+function figuraMetatables.PingAPI.__newindex(pings, key, value)
+    local k_type = type(key)
+    if k_type ~= "string" then
+        error(("Ping expects string as a key, not %s"):format(k_type));
+    end
+    local v_type = type(value);
+    if value ~= nil and v_type ~= "function" then
+        error(("Ping expects function as a handler, not %s"):format(v_type));
+    end
+    local env = env_control.current_env();
+    env.pings[key] = value;
+    old_ping_set(pings, key, value);
+end
+--#endregion
+
 ---Returns path components
 ---@param path string
 ---@return string[]
@@ -285,7 +310,7 @@ end
 
 --#region ENVIRONMENT CONTROL FUNCTIONS
 local function env_require(name)
-    local env = environments[active_environment];
+    local env = env_control.current_env();
     local script_env = env.env;
     local reqs = env.requires;
     local req = reqs[name];
@@ -326,8 +351,6 @@ local environment_init_error = [[Error ocurred during initialization of environm
 %s
 This environment has been removed from your runtime.]];
 
-local env_control = {};
-
 function env_control.remove_env(name)
     environments[name] = nil;
     for i = 1, #environment_ids, 1 do
@@ -361,6 +384,22 @@ function env_control.init_env(env)
     env.initialized = true;
 end
 
+---Restores avatar variables by using the table
+---@param tbl table<string, any>
+local function restore_avatar_variables(tbl)
+    for key, value in pairs(tbl) do
+        avatar:store(key, value);
+    end
+end
+
+---Restores avatar pings by using the table
+---@param tbl table<string, function>
+local function restore_pings(tbl)
+    for key, value in pairs(tbl) do
+        old_ping_set(pings, key, value);
+    end
+end
+
 ---@param env EnvTable Environment
 function env_control.load_env(env)
     if not env.initialized then
@@ -383,6 +422,25 @@ function env_control.load_env(env)
             print("mrrrp");
             model_root:setVisible(env.root_visibility);
         end
+
+        restore_avatar_variables(env.avatar_vars);
+        restore_pings(env.pings);
+    end
+end
+
+---Clears avatar variables and returns table with them
+local function clear_avatar_variables()
+    local out = {};
+    for key, value in pairs(user:getVariable()) do
+        out[key] = value;
+        avatar:store(key, nil);
+    end
+    return out;
+end
+
+local function clear_pings(tbl)
+    for key, _ in pairs(tbl) do
+        old_ping_set(pings, key, nil);
     end
 end
 
@@ -403,11 +461,14 @@ function env_control.unload_env(env)
         model_root:setVisible(false);
     end
 
+    env.avatar_vars = clear_avatar_variables();
+    clear_pings(env.pings);
+
     -- Setting current action wheel page to nil
     action_wheel:setPage(nil);
 end
 
-local function current_env()
+function env_control.current_env()
     return environments[environment_id()]
 end
 
@@ -419,12 +480,12 @@ function switch_environment(name)
         return;
     end
 
-    local old_env = current_env();
+    local old_env = env_control.current_env();
     env_control.unload_env(old_env);
 
     active_environment = name or "___ROOT___";
 
-    local new_env = current_env();
+    local new_env = env_control.current_env();
 
     env_control.load_env(new_env);
 
