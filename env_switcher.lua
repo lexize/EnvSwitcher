@@ -8,7 +8,9 @@ local modules = {
     keybinds = true,
     avatar_vars = true,
     vanilla_parts = true,
+    ordered_vanilla_parts = false,
     nameplates = true,
+    host = true,
     shared = false
 };
 
@@ -83,9 +85,13 @@ log(("Global script directories: [ %s ]"):format(table.concat(global_script_dirs
 
 ---@alias EnvKeybind {kb: Keybind, state: boolean}
 
+---@alias EnvPartHolder {part: VanillaPart, indexer: function, fields: {field: string, args: any[]}[]}
+
 ---@alias EnvPart {values: table<string, table>, indexer: function}
 
 ---@alias EnvNameplates { chat: string?, list: string?, entity: table<string, table> }
+
+---@alias EnvHost { unlock_cursor: boolean, chat_color: table }
 
 ---@class EnvTable
 ---@field id string
@@ -101,7 +107,9 @@ log(("Global script directories: [ %s ]"):format(table.concat(global_script_dirs
 ---@field pings table<string, function>
 ---@field keybinds EnvKeybind[]
 ---@field vanilla_parts table<VanillaPart, EnvPart>
+---@field ordered_vanilla_parts EnvPartHolder[]
 ---@field nameplates EnvNameplates
+---@field host EnvHost
 ---@field initialized boolean
 
 local active_environment;
@@ -187,7 +195,9 @@ for i, env in ipairs(cfg.environments) do
         pings = {},
         keybinds = {},
         vanilla_parts = {},
+        ordered_vanilla_parts = {},
         nameplates = {entity = {}},
+        host = { unlock_cursor = true, chat_color = {} },
         initialized = false
     };
 
@@ -221,7 +231,9 @@ environments.___ROOT___ = {
     pings = {},
     keybinds = {},
     vanilla_parts = {},
+    ordered_vanilla_parts = {},
     nameplates = {entity = {}},
+    host = { unlock_cursor = true, chat_color = {} },
     initialized = true
 }
 
@@ -388,21 +400,106 @@ end
 
 --#region REDEFINING VANILLA MODELPART CLASS BEHAVIOR
 if modules.vanilla_parts then
-    local function vp_wrapper(func, field, indexer)
-        return function (self, ...)
-            local n_func;
-            if type(func) == "string" then
-                n_func = indexer(self, func);
-            else
-                n_func = func;
+    local vp_wrapper;
+    if modules.ordered_vanilla_parts then
+        ---@param env EnvTable
+        ---@param part VanillaPart
+        ---@param indexer function?
+        ---@param create boolean?
+        local function find_part_holder(env, part, indexer, create)
+            local vparts = env.ordered_vanilla_parts;
+            for i, holder in ipairs(vparts) do
+                if holder.part == part then
+                    -- Moving the part to the top of the list, and returning it.
+                    table.remove(vparts, i);
+                    vparts[#vparts+1] = holder;
+                    return holder;
+                end
             end
-            local ret = n_func(self, ...);
-            local cur_env = env_control.current_env();
-            local args = {...};
-            local saves = cur_env.vanilla_parts[self] or {values = {}, indexer = indexer};
-            saves.values[field] = args;
-            cur_env.vanilla_parts[self] = saves;
-            return ret;
+            if create then
+                -- Creating the part, pushing it to the top of the list, and returning it.
+                ---@type EnvPartHolder
+                local holder = {
+                    indexer = indexer --[[@as function]],
+                    part = part,
+                    fields = {}
+                };
+                vparts[#vparts+1] = holder;
+                return holder;
+            end
+        end
+
+        ---@param part EnvPartHolder
+        ---@param field string
+        ---@param create boolean?
+        local function find_field(part, field, create)
+            local fields = part.fields;
+            for i, f in ipairs(fields) do
+                if f.field == field then
+                    -- Moving the field to the top, and returning it.
+                    table.remove(fields, i);
+                    fields[#fields+1] = f;
+                    return f;
+                end
+            end
+            if create then
+                -- Creating the field, pushing it to the top, and returning it.
+                local field = {field = field, args = {}};;
+                fields[#fields+1] = field;
+                return field;
+            end
+        end
+
+        function vp_wrapper(func, field, indexer)
+            return function (part, ...)
+                local n_func;
+                if type(func) == "string" then
+                    n_func = indexer(part, func);
+                else
+                    n_func = func;
+                end
+                local ret = n_func(part, ...);
+                local cur_env = env_control.current_env();
+                local args = {...};
+                if #args > 0 then
+                    -- If there are more than 0 args - saving them.
+                    local holder = find_part_holder(cur_env, part, indexer, true);
+                    local field = find_field(holder, field, true);
+                    field.args = args;
+                else
+                    -- Otherwise, removing the field if it exists, and then, if there are no saved fields anymore, removing the part itself too.
+                    local holder = find_part_holder(cur_env, part);
+                    if holder ~= nil then
+                        local field = find_field(holder, field);
+                        if field ~= nil then
+                            holder[#holder] = nil;
+                        end
+                        if #holder.fields == 0 then
+                            local orparts = cur_env.ordered_vanilla_parts;
+                            orparts[#orparts] = nil;
+                        end
+                    end
+                end
+                return ret;
+            end
+        end
+    else
+        function vp_wrapper(func, field, indexer)
+            return function (part, ...)
+                local n_func;
+                if type(func) == "string" then
+                    n_func = indexer(part, func);
+                else
+                    n_func = func;
+                end
+                local ret = n_func(part, ...);
+                local cur_env = env_control.current_env();
+                local args = {...};
+                local saves = cur_env.vanilla_parts[part] or {values = {}, indexer = indexer};
+                saves.values[field] = args;
+                cur_env.vanilla_parts[part] = saves;
+                return ret;
+            end
         end
     end
     
@@ -513,6 +610,33 @@ if modules.nameplates then
     
     figuraMetatables.NameplateCustomizationGroup.__index = setmetatable(new_group_nameplate, {__index=old_group_nameplate});     
 end
+--#endregion
+
+--#region REDEFINING HOST CLASS BEHAVIOR 
+local old_host;
+if modules.host then
+old_host = figuraMetatables.HostAPI.__index;
+
+local new_host = {};
+
+function new_host:setChatColor(...)
+    local cur_env = env_control.current_env();
+    local ret = old_host.setChatColor(self, ...);
+    cur_env.host.chat_color = {...};
+    return ret;
+end
+
+function new_host:chatColor(...)
+    return self:setChatColor(...);
+end
+
+figuraMetatables.HostAPI.__index = setmetatable(new_host, {__index=old_host});
+
+end
+--#endregion
+
+--#region REDEFINING RENDERER CLASS BEHAVIOR
+
 --#endregion
 
 ---Returns path components
@@ -639,9 +763,19 @@ end
 ---comment
 ---@param env EnvTable
 local function restore_parts(env)
-    for part, env_part in pairs(env.vanilla_parts) do
-        for field, value in pairs(env_part.values) do
-            index(part, env_part.indexer, field)(part, table.unpack(value));
+    if modules.ordered_vanilla_parts then
+        for _, holder in ipairs(env.ordered_vanilla_parts) do
+            local part = holder.part;
+            local indexer = holder.indexer;
+            for _, field in ipairs(holder.fields) do
+                index(part, indexer, field.field)(part, table.unpack(field.args));
+            end
+        end
+    else
+        for part, env_part in pairs(env.vanilla_parts) do
+            for field, value in pairs(env_part.values) do
+                index(part, env_part.indexer, field)(part, table.unpack(value));
+            end
         end
     end
 end
@@ -655,6 +789,13 @@ local function restore_nameplates(env)
         local func = old_entity_nameplate[field];
         func(entity_nameplate, table.unpack(value))
     end
+end
+
+---@param env EnvTable
+local function restore_host(env)
+    local env_host = env.host;
+    host:setUnlockCursor(env_host.unlock_cursor);
+    old_host.setChatColor(host, table.unpack(env_host.chat_color));
 end
 
 ---@param env EnvTable Environment
@@ -688,6 +829,7 @@ function env_control.load_env(env)
         if modules.keybinds then restore_keybinds(env); end
         if modules.vanilla_parts then restore_parts(env); end
         if modules.nameplates then restore_nameplates(env); end
+        if modules.host then restore_host(env); end
     end
 end
 
@@ -717,9 +859,19 @@ end
 ---comment
 ---@param env EnvTable
 local function clear_parts(env)
-    for part, env_part in pairs(env.vanilla_parts) do
-        for field, _ in pairs(env_part.values) do
-            index(part, env_part.indexer, field)(part);
+    if modules.ordered_vanilla_parts then
+        for _, holder in ipairs(env.ordered_vanilla_parts) do
+            local part = holder.part;
+            local indexer = holder.indexer;
+            for _, field in ipairs(holder.fields) do
+                index(part, indexer, field.field)(part);
+            end
+        end
+    else
+        for part, env_part in pairs(env.vanilla_parts) do
+            for field, _ in pairs(env_part.values) do
+                index(part, env_part.indexer, field)(part);
+            end
         end
     end
 end
@@ -735,6 +887,12 @@ local function clear_nameplates(env)
         local func = old_entity_nameplate[field];
         func(entity_nameplate)
     end
+end
+
+---@param env EnvTable
+local function clear_host(env)
+    env.host.unlock_cursor = host:isCursorUnlocked();
+    old_host.setChatColor(host);
 end
 
 ---@param env EnvTable Environment
@@ -766,6 +924,7 @@ function env_control.unload_env(env)
     if modules.keybinds then clear_keybinds(env); end
     if modules.vanilla_parts then clear_parts(env); end
     if modules.nameplates then clear_nameplates(env); end
+    if modules.host then clear_host(env); end
 end
 
 function env_control.current_env()

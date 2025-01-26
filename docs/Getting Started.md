@@ -69,7 +69,9 @@ Before starting actually setting up your avatar, you need to configure the EnvSw
     * `keybinds` - If `true`, each environment will have it's own set of keybinds, all the keybinds will be prefixed with environment ID, and keybinds from other environments will be disabled. Default - `true`.
     * `avatar_vars` - If `true`, each environment will have it's own set of avatar variables set with `avatar:store`. Default - `true`.
     * `vanilla_parts` - If `true`, each environment will have it's own set of vanilla modelparts states. Default - `true`.
+    * `ordered_vanilla_parts` - Can be used only with `vanilla_parts` module. If `true` - enables the ordered switching backend which ensures saving the changes in the right order. This can increase the ammount of instructions and make your avatar less performant, so, turn on only if you are sure that your changes might break, for example if you are using vanilla parts groups. Default - `false`.
     * `nameplates` - If `true`, each environment will have it's own set of nameplates. Default - `true`.
+    * `host` - If `true`, some values set by host, such as `chatColor` and `unlockCursor` will be switched between environments. Default - `true`.
     * `shared` - If `true`, each environment will have access to the global `__SHARED` variable, which is persistent between all the environments. Default - `false`.
 * `unix_path_format` - Setting this field to `true` will make `require()` function accept unix-like paths, instead of Lua-like ones. For example `foo.bar` turns into `foo/bar`. This also allows having dots in script and directory names, for example: `foo/.bar`.
 * `__debug` - Setting this field to `true` will turn on debug logs.
