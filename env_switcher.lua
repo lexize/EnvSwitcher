@@ -60,6 +60,10 @@ local unix_path_format = cfg.unix_path_format;
 
 log(("Global script directories: [ %s ]"):format(table.concat(global_script_dirs, ", ")), "DEBUG");
 
+---@alias EnvKeybind {kb: Keybind, state: boolean}
+
+---@alias EnvPart {values: table<string, table>, indexer: function}
+
 ---@class EnvTable
 ---@field id string
 ---@field requires table<string, any[]>
@@ -72,6 +76,8 @@ log(("Global script directories: [ %s ]"):format(table.concat(global_script_dirs
 ---@field auto_scripts string[]
 ---@field avatar_vars table<string, any>
 ---@field pings table<string, function>
+---@field keybinds EnvKeybind[]
+---@field vanilla_parts table<VanillaPart, EnvPart>
 ---@field initialized boolean
 
 local active_environment;
@@ -151,6 +157,8 @@ for i, env in ipairs(cfg.environments) do
         auto_scripts = env.auto_scripts or {},
         avatar_vars = {},
         pings = {},
+        keybinds = {},
+        vanilla_parts = {},
         initialized = false
     };
 
@@ -180,6 +188,8 @@ environments.___ROOT___ = {
     auto_scripts = {},
     avatar_vars = {},
     pings = {},
+    keybinds = {},
+    vanilla_parts = {},
     initialized = true
 }
 
@@ -295,6 +305,136 @@ function figuraMetatables.PingAPI.__newindex(pings, key, value)
 end
 --#endregion
 
+--#region REDEFINING KEYBIND CLASS BEHAVIOR
+local old_keybinds = figuraMetatables.KeybindAPI.__index;
+
+local new_keybinds = {};
+
+function new_keybinds:newKeybind(name, key, gui)
+    local cur_env = env_control.current_env();
+    local new_name;
+    if cur_env.id ~= "___ROOT___" then
+        new_name = "["..cur_env.id.."] "..name;
+    else
+        new_name = name;
+    end
+    local kb = old_keybinds.newKeybind(self, new_name, key, gui);
+    cur_env.keybinds[#cur_env.keybinds+1] = {kb = kb, state = true};
+    return kb;
+end
+
+function new_keybinds:of(...)
+    return new_keybinds.newKeybind(self, ...);
+end
+
+function new_keybinds:fromVanilla(id)
+    local kb = old_keybinds.fromVanilla(self, id);
+    local cur_env = env_control.current_env();
+    cur_env.keybinds[#cur_env.keybinds+1] = { kb = kb, state = true };
+    return kb;
+end
+
+function new_keybinds:getKeybinds()
+    local cur_env = env_control.current_env();
+    local out = {};
+    for _, keybind in ipairs(cur_env.keybinds) do
+        local keybind = keybind.kb;
+        out[keybind:getName()] = keybind;
+    end
+    return out;
+end
+
+figuraMetatables.KeybindAPI.__index = setmetatable(new_keybinds, {__index = old_keybinds});
+
+--#endregion
+
+--#region REDEFINING VANILLA MODELPART CLASS BEHAVIOR
+
+local function vp_wrapper(func, field, indexer)
+    return function (self, ...)
+        local n_func;
+        if type(func) == "string" then
+            n_func = indexer(self, func);
+        else
+            n_func = func;
+        end
+        local ret = n_func(self, ...);
+        local cur_env = env_control.current_env();
+        local args = {...};
+        local saves = cur_env.vanilla_parts[self] or {values = {}, indexer = indexer};
+        saves.values[field] = args;
+        cur_env.vanilla_parts[self] = saves;
+        return ret;
+    end
+end
+
+local function layered_index(first, second)
+    return function (self, index)
+        local v = type(first) == "function" and first(self, index) or first[index];
+        if v ~= nil then
+            return v;
+        else
+            return type(second) == "function" and second(self, index) or second[index];
+        end
+    end
+end
+
+local old_vanilla_part = figuraMetatables.VanillaPart.__index;
+
+local new_vanilla_part = {};
+new_vanilla_part.offsetRot = vp_wrapper(old_vanilla_part.offsetRot, "offsetRot", old_vanilla_part);
+new_vanilla_part.offsetScale = vp_wrapper(old_vanilla_part.offsetScale, "offsetScale", old_vanilla_part);
+new_vanilla_part.pos = vp_wrapper(old_vanilla_part.pos, "pos", old_vanilla_part);
+new_vanilla_part.rot = vp_wrapper(old_vanilla_part.rot, "rot", old_vanilla_part);
+new_vanilla_part.scale = vp_wrapper(old_vanilla_part.scale, "scale", old_vanilla_part);
+new_vanilla_part.visible = vp_wrapper(old_vanilla_part.visible, "visible", old_vanilla_part);
+new_vanilla_part.setOffsetRot = vp_wrapper(old_vanilla_part.offsetRot, "offsetRot", old_vanilla_part);
+new_vanilla_part.setOffsetScale = vp_wrapper(old_vanilla_part.offsetScale, "offsetScale", old_vanilla_part);
+new_vanilla_part.setPos = vp_wrapper(old_vanilla_part.pos, "pos", old_vanilla_part);
+new_vanilla_part.setRot = vp_wrapper(old_vanilla_part.rot, "rot", old_vanilla_part);
+new_vanilla_part.setScale = vp_wrapper(old_vanilla_part.scale, "scale", old_vanilla_part);
+new_vanilla_part.setVisible = vp_wrapper(old_vanilla_part.visible, "visible", old_vanilla_part);
+
+figuraMetatables.VanillaPart.__index = setmetatable(new_vanilla_part, {__index=old_vanilla_part});
+
+local old_vanilla_model_part = figuraMetatables.VanillaModelPart.__index;
+
+local new_vanilla_model_part = {};
+new_vanilla_model_part.offsetRot = vp_wrapper(old_vanilla_model_part.offsetRot, "offsetRot", old_vanilla_model_part);
+new_vanilla_model_part.offsetScale = vp_wrapper(old_vanilla_model_part.offsetScale, "offsetScale", old_vanilla_model_part);
+new_vanilla_model_part.pos = vp_wrapper(old_vanilla_model_part.pos, "pos", old_vanilla_model_part);
+new_vanilla_model_part.rot = vp_wrapper(old_vanilla_model_part.rot, "rot", old_vanilla_model_part);
+new_vanilla_model_part.scale = vp_wrapper(old_vanilla_model_part.scale, "scale", old_vanilla_model_part);
+new_vanilla_model_part.visible = vp_wrapper(old_vanilla_model_part.visible, "visible", old_vanilla_model_part);
+new_vanilla_model_part.setOffsetRot = vp_wrapper(old_vanilla_model_part.offsetRot, "offsetRot", old_vanilla_model_part);
+new_vanilla_model_part.setOffsetScale = vp_wrapper(old_vanilla_model_part.offsetScale, "offsetScale", old_vanilla_model_part);
+new_vanilla_model_part.setPos = vp_wrapper(old_vanilla_model_part.pos, "pos", old_vanilla_model_part);
+new_vanilla_model_part.setRot = vp_wrapper(old_vanilla_model_part.rot, "rot", old_vanilla_model_part);
+new_vanilla_model_part.setScale = vp_wrapper(old_vanilla_model_part.scale, "scale", old_vanilla_model_part);
+new_vanilla_model_part.setVisible = vp_wrapper(old_vanilla_model_part.visible, "visible", old_vanilla_model_part);
+
+figuraMetatables.VanillaModelPart.__index = setmetatable(new_vanilla_model_part, {__index=old_vanilla_model_part});
+
+local old_vanilla_model_group = figuraMetatables.VanillaModelGroup.__index;
+
+local new_vanilla_model_group = {};
+new_vanilla_model_group.offsetRot = vp_wrapper("offsetRot", "offsetRot", old_vanilla_model_group);
+new_vanilla_model_group.offsetScale = vp_wrapper("offsetScale", "offsetScale", old_vanilla_model_group);
+new_vanilla_model_group.pos = vp_wrapper("pos", "pos", old_vanilla_model_group);
+new_vanilla_model_group.rot = vp_wrapper("rot", "rot", old_vanilla_model_group);
+new_vanilla_model_group.scale = vp_wrapper("scale", "scale", old_vanilla_model_group);
+new_vanilla_model_group.visible = vp_wrapper("visible", "visible", old_vanilla_model_group);
+new_vanilla_model_group.setOffsetRot = vp_wrapper("offsetRot", "offsetRot", old_vanilla_model_group);
+new_vanilla_model_group.setOffsetScale = vp_wrapper("offsetScale", "offsetScale", old_vanilla_model_group);
+new_vanilla_model_group.setPos = vp_wrapper("pos", "pos", old_vanilla_model_group);
+new_vanilla_model_group.setRot = vp_wrapper("rot", "rot", old_vanilla_model_group);
+new_vanilla_model_group.setScale = vp_wrapper("scale", "scale", old_vanilla_model_group);
+new_vanilla_model_group.setVisible = vp_wrapper("visible", "visible", old_vanilla_model_group);
+
+figuraMetatables.VanillaModelGroup.__index = setmetatable(new_vanilla_model_group, {__index=old_vanilla_model_group});
+
+--#endregion
+
 ---Returns path components
 ---@param path string
 ---@return string[]
@@ -400,6 +540,30 @@ local function restore_pings(tbl)
     end
 end
 
+local function index(self, indexed, field)
+    if type(indexed) == "function" then
+        return indexed(self, field)
+    else
+        return indexed[field]
+    end
+end
+
+local function restore_keybinds(env)
+    for _, keybind in ipairs(env.keybinds) do
+        keybind.kb:setEnabled(keybind.state);
+    end
+end
+
+---comment
+---@param env EnvTable
+local function restore_parts(env)
+    for part, env_part in pairs(env.vanilla_parts) do
+        for field, value in pairs(env_part.values) do
+            index(part, env_part.indexer, field)(part, table.unpack(value));
+        end
+    end
+end
+
 ---@param env EnvTable Environment
 function env_control.load_env(env)
     if not env.initialized then
@@ -419,12 +583,13 @@ function env_control.load_env(env)
         -- Restoring environment root visibility state
         local model_root = env.model_root;
         if model_root ~= nil then
-            print("mrrrp");
             model_root:setVisible(env.root_visibility);
         end
 
         restore_avatar_variables(env.avatar_vars);
         restore_pings(env.pings);
+        restore_keybinds(env);
+        restore_parts(env);
     end
 end
 
@@ -441,6 +606,23 @@ end
 local function clear_pings(tbl)
     for key, _ in pairs(tbl) do
         old_ping_set(pings, key, nil);
+    end
+end
+
+local function clear_keybinds(env)
+    for _, keybind in ipairs(env.keybinds) do
+        keybind.state = keybind.kb:isEnabled();
+        keybind.kb:setEnabled(false);
+    end
+end
+
+---comment
+---@param env EnvTable
+local function clear_parts(env)
+    for part, env_part in pairs(env.vanilla_parts) do
+        for field, _ in pairs(env_part.values) do
+            index(part, env_part.indexer, field)(part);
+        end
     end
 end
 
@@ -463,7 +645,8 @@ function env_control.unload_env(env)
 
     env.avatar_vars = clear_avatar_variables();
     clear_pings(env.pings);
-
+    clear_keybinds(env);
+    clear_parts(env);
     -- Setting current action wheel page to nil
     action_wheel:setPage(nil);
 end
