@@ -1,5 +1,16 @@
 local cfg; -- Config struct
 local env_control = {};
+local modules = {
+    action_wheel = true,
+    events = true,
+    modelparts = true,
+    pings = true,
+    keybinds = true,
+    avatar_vars = true,
+    vanilla_parts = true,
+    nameplates = true,
+    shared = false
+};
 
 local log_colors = {
     INFO = "#55FF55",
@@ -58,6 +69,16 @@ local global_script_dirs = cfg.global_script_dirs or {};
 local scripts_dir = cfg.script_dir or ".scripts";
 local unix_path_format = cfg.unix_path_format;
 
+if type(cfg.modules) == "table" then
+    local mods = cfg.modules;
+    for key, _ in pairs(modules) do
+        local v = mods[key];
+        if type(v) == "boolean" then
+            modules[key] = v;
+        end
+    end
+end
+
 log(("Global script directories: [ %s ]"):format(table.concat(global_script_dirs, ", ")), "DEBUG");
 
 ---@alias EnvKeybind {kb: Keybind, state: boolean}
@@ -113,27 +134,31 @@ for i, env in ipairs(cfg.environments) do
 
     local env_models = {};
 
-    -- Moving specified models to this environment.
-    if type(env.models) == "table" then
-        for _, model_name in ipairs(env.models) do
-            local model = models[model_name];
-            if model ~= nil then
-                models:removeChild(model);
-                env_models[#env_models+1] = model;
+    local model_root;
+
+    if modules.modelparts then
+        -- Moving specified models to this environment.
+        if type(env.models) == "table" then
+            for _, model_name in ipairs(env.models) do
+                local model = models[model_name];
+                if model ~= nil then
+                    models:removeChild(model);
+                    env_models[#env_models+1] = model;
+                end
             end
         end
-    end
 
-    local model_root = models:newPart(id);
+        model_root = models:newPart(id);
+
+        -- Adding environment models to model root of this environment
+        for _, model in ipairs(env_models) do
+            model_root:addChild(model);
+        end
+    end
 
     local script_environment = {
         models = model_root
     };
-
-    -- Adding environment models to model root of this environment
-    for _, model in ipairs(env_models) do
-        model_root:addChild(model);
-    end
 
     local script_dirs = {};
 
@@ -180,6 +205,8 @@ if default_environment == nil then
     default_environment = "___ROOT___";
 end
 
+
+
 -- Defining internal environment
 environments.___ROOT___ = {
     id = "___ROOT___",
@@ -200,11 +227,13 @@ environments.___ROOT___ = {
 
 --#endregion
 
--- Making all models in avatar root invisible
--- Roots of environments will be made visible on initialized
--- All other models, that are not in environments, shouldn't be visible
-for _, model in ipairs(models:getChildren()) do
-    model:setVisible(false);
+if modules.modelparts then
+    -- Making all models in avatar root invisible
+    -- Roots of environments will be made visible on initialized
+    -- All other models, that are not in environments, shouldn't be visible
+    for _, model in ipairs(models:getChildren()) do
+        model:setVisible(false);
+    end
 end
 
 ---Returns id of the current active environment
@@ -226,258 +255,264 @@ end
 --#region REDEFINING EVENT CLASS BEHAVIOR
 local old_event = figuraMetatables.Event.__index;
 
-local new_event = {};
+if modules.events then    
+    local new_event = {};
 
-local function remove_handlers(tbl, name)
-    for i = 1, tbl, 1 do
-        local h = tbl[i];
-        if h.n == name then
-            table.remove(tbl, i);
-            i = i - 1;
+    local function remove_handlers(tbl, name)
+        for i = 1, tbl, 1 do
+            local h = tbl[i];
+            if h.n == name then
+                table.remove(tbl, i);
+                i = i - 1;
+            end
         end
     end
-end
 
-function new_event:register(func, name)
-    local f_type = type(func);
-    if f_type ~= "function" then
-        log(("Event expects function as a handler, not %s"):format(f_type), "FATAL", active_environment);
-        error("Unable to create an Event handler");
+    function new_event:register(func, name)
+        local f_type = type(func);
+        if f_type ~= "function" then
+            log(("Event expects function as a handler, not %s"):format(f_type), "FATAL", active_environment);
+            error("Unable to create an Event handler");
+        end
+        local n_type = type(name);
+        if name ~= nil and n_type ~= "string" then
+            log(("Event expects string as handler name, not %s"):format(n_type), "FATAL", active_environment);
+            error("Unable to create an Event handler");
+        end
+
+        local events = environments[environment_id()].events;
+        events[self] = events[self] or {};
+        local handlers = events[self];
+        handlers[#handlers+1] = {f = func, n = name};
+        old_event.register(self, func, name);
+        log("Registered new event", "DEBUG", active_environment);
+        return self;
     end
-    local n_type = type(name);
-    if name ~= nil and n_type ~= "string" then
-        log(("Event expects string as handler name, not %s"):format(n_type), "FATAL", active_environment);
-        error("Unable to create an Event handler");
+
+    function new_event:remove(name)
+        local events = environments[environment_id()].events;
+        events[self] = events[self] or {};
+        local handlers = events[self];
+        local len = #handlers;
+        remove_handlers(handlers, name);
+        old_event.remove(self, name);
+        return len - #handlers;
     end
 
-    local events = environments[environment_id()].events;
-    events[self] = events[self] or {};
-    local handlers = events[self];
-    handlers[#handlers+1] = {f = func, n = name};
-    old_event.register(self, func, name);
-    log("Registered new event", "DEBUG", active_environment);
-    return self;
-end
-
-function new_event:remove(name)
-    local events = environments[environment_id()].events;
-    events[self] = events[self] or {};
-    local handlers = events[self];
-    local len = #handlers;
-    remove_handlers(handlers, name);
-    old_event.remove(self, name);
-    return len - #handlers;
-end
-
-function new_event:clear()
-    local events = environments[environment_id()].events;
-    events[self] = {};
-    old_event.clear(self);
-end
-
-function new_event:getRegisteredCount(name)
-    return old_event.getRegisteredCount(self, name);
-end
-
-figuraMetatables.Event.__index = new_event;
-
-figuraMetatables.EventsAPI.__newindex = function (events, key, func)
-    local f_type = type(func);
-    if f_type ~= "function" then
-        log(("Event expects function as a handler, not %s"):format(f_type), "FATAL", active_environment);
-        error("Unable to create an Event handler");
+    function new_event:clear()
+        local events = environments[environment_id()].events;
+        events[self] = {};
+        old_event.clear(self);
     end
-    local actual_event_name = string.upper(key);
-    events[actual_event_name]:register(func);
+
+    function new_event:getRegisteredCount(name)
+        return old_event.getRegisteredCount(self, name);
+    end
+
+    figuraMetatables.Event.__index = new_event;
+
+    figuraMetatables.EventsAPI.__newindex = function (events, key, func)
+        local f_type = type(func);
+        if f_type ~= "function" then
+            log(("Event expects function as a handler, not %s"):format(f_type), "FATAL", active_environment);
+            error("Unable to create an Event handler");
+        end
+        local actual_event_name = string.upper(key);
+        events[actual_event_name]:register(func);
+    end
 end
 --#endregion
 
 --#region REDEFINING PING CLASS BEHAVIOR
 local old_ping_set = figuraMetatables.PingAPI.__newindex;
-
-function figuraMetatables.PingAPI.__newindex(pings, key, value)
-    local k_type = type(key)
-    if k_type ~= "string" then
-        error(("Ping expects string as a key, not %s"):format(k_type));
+if modules.pings then
+    function figuraMetatables.PingAPI.__newindex(pings, key, value)
+        local k_type = type(key)
+        if k_type ~= "string" then
+            error(("Ping expects string as a key, not %s"):format(k_type));
+        end
+        local v_type = type(value);
+        if value ~= nil and v_type ~= "function" then
+            error(("Ping expects function as a handler, not %s"):format(v_type));
+        end
+        local env = env_control.current_env();
+        env.pings[key] = value;
+        old_ping_set(pings, key, value);
     end
-    local v_type = type(value);
-    if value ~= nil and v_type ~= "function" then
-        error(("Ping expects function as a handler, not %s"):format(v_type));
-    end
-    local env = env_control.current_env();
-    env.pings[key] = value;
-    old_ping_set(pings, key, value);
 end
 --#endregion
 
 --#region REDEFINING KEYBIND CLASS BEHAVIOR
 local old_keybinds = figuraMetatables.KeybindAPI.__index;
 
-local new_keybinds = {};
+if modules.keybinds then
+    local new_keybinds = {};
 
-function new_keybinds:newKeybind(name, key, gui)
-    local cur_env = env_control.current_env();
-    local new_name;
-    if cur_env.id ~= "___ROOT___" then
-        new_name = "["..cur_env.id.."] "..name;
-    else
-        new_name = name;
+    function new_keybinds:newKeybind(name, key, gui)
+        local cur_env = env_control.current_env();
+        local new_name;
+        if cur_env.id ~= "___ROOT___" then
+            new_name = "["..cur_env.id.."] "..name;
+        else
+            new_name = name;
+        end
+        local kb = old_keybinds.newKeybind(self, new_name, key, gui);
+        cur_env.keybinds[#cur_env.keybinds+1] = {kb = kb, state = true};
+        return kb;
     end
-    local kb = old_keybinds.newKeybind(self, new_name, key, gui);
-    cur_env.keybinds[#cur_env.keybinds+1] = {kb = kb, state = true};
-    return kb;
-end
 
-function new_keybinds:of(...)
-    return new_keybinds.newKeybind(self, ...);
-end
-
-function new_keybinds:fromVanilla(id)
-    local kb = old_keybinds.fromVanilla(self, id);
-    local cur_env = env_control.current_env();
-    cur_env.keybinds[#cur_env.keybinds+1] = { kb = kb, state = true };
-    return kb;
-end
-
-function new_keybinds:getKeybinds()
-    local cur_env = env_control.current_env();
-    local out = {};
-    for _, keybind in ipairs(cur_env.keybinds) do
-        local keybind = keybind.kb;
-        out[keybind:getName()] = keybind;
+    function new_keybinds:of(...)
+        return new_keybinds.newKeybind(self, ...);
     end
-    return out;
+
+    function new_keybinds:fromVanilla(id)
+        local kb = old_keybinds.fromVanilla(self, id);
+        local cur_env = env_control.current_env();
+        cur_env.keybinds[#cur_env.keybinds+1] = { kb = kb, state = true };
+        return kb;
+    end
+
+    function new_keybinds:getKeybinds()
+        local cur_env = env_control.current_env();
+        local out = {};
+        for _, keybind in ipairs(cur_env.keybinds) do
+            local keybind = keybind.kb;
+            out[keybind:getName()] = keybind;
+        end
+        return out;
+    end
+
+    figuraMetatables.KeybindAPI.__index = setmetatable(new_keybinds, {__index = old_keybinds});
 end
-
-figuraMetatables.KeybindAPI.__index = setmetatable(new_keybinds, {__index = old_keybinds});
-
 --#endregion
 
 --#region REDEFINING VANILLA MODELPART CLASS BEHAVIOR
-
-local function vp_wrapper(func, field, indexer)
-    return function (self, ...)
-        local n_func;
-        if type(func) == "string" then
-            n_func = indexer(self, func);
-        else
-            n_func = func;
+if modules.vanilla_parts then
+    local function vp_wrapper(func, field, indexer)
+        return function (self, ...)
+            local n_func;
+            if type(func) == "string" then
+                n_func = indexer(self, func);
+            else
+                n_func = func;
+            end
+            local ret = n_func(self, ...);
+            local cur_env = env_control.current_env();
+            local args = {...};
+            local saves = cur_env.vanilla_parts[self] or {values = {}, indexer = indexer};
+            saves.values[field] = args;
+            cur_env.vanilla_parts[self] = saves;
+            return ret;
         end
-        local ret = n_func(self, ...);
-        local cur_env = env_control.current_env();
-        local args = {...};
-        local saves = cur_env.vanilla_parts[self] or {values = {}, indexer = indexer};
-        saves.values[field] = args;
-        cur_env.vanilla_parts[self] = saves;
-        return ret;
     end
+    
+    local old_vanilla_part = figuraMetatables.VanillaPart.__index;
+    
+    local new_vanilla_part = {};
+    new_vanilla_part.offsetRot = vp_wrapper(old_vanilla_part.offsetRot, "offsetRot", old_vanilla_part);
+    new_vanilla_part.offsetScale = vp_wrapper(old_vanilla_part.offsetScale, "offsetScale", old_vanilla_part);
+    new_vanilla_part.pos = vp_wrapper(old_vanilla_part.pos, "pos", old_vanilla_part);
+    new_vanilla_part.rot = vp_wrapper(old_vanilla_part.rot, "rot", old_vanilla_part);
+    new_vanilla_part.scale = vp_wrapper(old_vanilla_part.scale, "scale", old_vanilla_part);
+    new_vanilla_part.visible = vp_wrapper(old_vanilla_part.visible, "visible", old_vanilla_part);
+    new_vanilla_part.setOffsetRot = vp_wrapper(old_vanilla_part.offsetRot, "offsetRot", old_vanilla_part);
+    new_vanilla_part.setOffsetScale = vp_wrapper(old_vanilla_part.offsetScale, "offsetScale", old_vanilla_part);
+    new_vanilla_part.setPos = vp_wrapper(old_vanilla_part.pos, "pos", old_vanilla_part);
+    new_vanilla_part.setRot = vp_wrapper(old_vanilla_part.rot, "rot", old_vanilla_part);
+    new_vanilla_part.setScale = vp_wrapper(old_vanilla_part.scale, "scale", old_vanilla_part);
+    new_vanilla_part.setVisible = vp_wrapper(old_vanilla_part.visible, "visible", old_vanilla_part);
+    
+    figuraMetatables.VanillaPart.__index = setmetatable(new_vanilla_part, {__index=old_vanilla_part});
+    
+    local old_vanilla_model_part = figuraMetatables.VanillaModelPart.__index;
+    
+    local new_vanilla_model_part = {};
+    new_vanilla_model_part.offsetRot = vp_wrapper(old_vanilla_model_part.offsetRot, "offsetRot", old_vanilla_model_part);
+    new_vanilla_model_part.offsetScale = vp_wrapper(old_vanilla_model_part.offsetScale, "offsetScale", old_vanilla_model_part);
+    new_vanilla_model_part.pos = vp_wrapper(old_vanilla_model_part.pos, "pos", old_vanilla_model_part);
+    new_vanilla_model_part.rot = vp_wrapper(old_vanilla_model_part.rot, "rot", old_vanilla_model_part);
+    new_vanilla_model_part.scale = vp_wrapper(old_vanilla_model_part.scale, "scale", old_vanilla_model_part);
+    new_vanilla_model_part.visible = vp_wrapper(old_vanilla_model_part.visible, "visible", old_vanilla_model_part);
+    new_vanilla_model_part.setOffsetRot = vp_wrapper(old_vanilla_model_part.offsetRot, "offsetRot", old_vanilla_model_part);
+    new_vanilla_model_part.setOffsetScale = vp_wrapper(old_vanilla_model_part.offsetScale, "offsetScale", old_vanilla_model_part);
+    new_vanilla_model_part.setPos = vp_wrapper(old_vanilla_model_part.pos, "pos", old_vanilla_model_part);
+    new_vanilla_model_part.setRot = vp_wrapper(old_vanilla_model_part.rot, "rot", old_vanilla_model_part);
+    new_vanilla_model_part.setScale = vp_wrapper(old_vanilla_model_part.scale, "scale", old_vanilla_model_part);
+    new_vanilla_model_part.setVisible = vp_wrapper(old_vanilla_model_part.visible, "visible", old_vanilla_model_part);
+    
+    figuraMetatables.VanillaModelPart.__index = setmetatable(new_vanilla_model_part, {__index=old_vanilla_model_part});
+    
+    local old_vanilla_model_group = figuraMetatables.VanillaModelGroup.__index;
+    
+    local new_vanilla_model_group = {};
+    new_vanilla_model_group.offsetRot = vp_wrapper("offsetRot", "offsetRot", old_vanilla_model_group);
+    new_vanilla_model_group.offsetScale = vp_wrapper("offsetScale", "offsetScale", old_vanilla_model_group);
+    new_vanilla_model_group.pos = vp_wrapper("pos", "pos", old_vanilla_model_group);
+    new_vanilla_model_group.rot = vp_wrapper("rot", "rot", old_vanilla_model_group);
+    new_vanilla_model_group.scale = vp_wrapper("scale", "scale", old_vanilla_model_group);
+    new_vanilla_model_group.visible = vp_wrapper("visible", "visible", old_vanilla_model_group);
+    new_vanilla_model_group.setOffsetRot = vp_wrapper("offsetRot", "offsetRot", old_vanilla_model_group);
+    new_vanilla_model_group.setOffsetScale = vp_wrapper("offsetScale", "offsetScale", old_vanilla_model_group);
+    new_vanilla_model_group.setPos = vp_wrapper("pos", "pos", old_vanilla_model_group);
+    new_vanilla_model_group.setRot = vp_wrapper("rot", "rot", old_vanilla_model_group);
+    new_vanilla_model_group.setScale = vp_wrapper("scale", "scale", old_vanilla_model_group);
+    new_vanilla_model_group.setVisible = vp_wrapper("visible", "visible", old_vanilla_model_group);
+    
+    figuraMetatables.VanillaModelGroup.__index = setmetatable(new_vanilla_model_group, {__index=old_vanilla_model_group});     
 end
-
-local old_vanilla_part = figuraMetatables.VanillaPart.__index;
-
-local new_vanilla_part = {};
-new_vanilla_part.offsetRot = vp_wrapper(old_vanilla_part.offsetRot, "offsetRot", old_vanilla_part);
-new_vanilla_part.offsetScale = vp_wrapper(old_vanilla_part.offsetScale, "offsetScale", old_vanilla_part);
-new_vanilla_part.pos = vp_wrapper(old_vanilla_part.pos, "pos", old_vanilla_part);
-new_vanilla_part.rot = vp_wrapper(old_vanilla_part.rot, "rot", old_vanilla_part);
-new_vanilla_part.scale = vp_wrapper(old_vanilla_part.scale, "scale", old_vanilla_part);
-new_vanilla_part.visible = vp_wrapper(old_vanilla_part.visible, "visible", old_vanilla_part);
-new_vanilla_part.setOffsetRot = vp_wrapper(old_vanilla_part.offsetRot, "offsetRot", old_vanilla_part);
-new_vanilla_part.setOffsetScale = vp_wrapper(old_vanilla_part.offsetScale, "offsetScale", old_vanilla_part);
-new_vanilla_part.setPos = vp_wrapper(old_vanilla_part.pos, "pos", old_vanilla_part);
-new_vanilla_part.setRot = vp_wrapper(old_vanilla_part.rot, "rot", old_vanilla_part);
-new_vanilla_part.setScale = vp_wrapper(old_vanilla_part.scale, "scale", old_vanilla_part);
-new_vanilla_part.setVisible = vp_wrapper(old_vanilla_part.visible, "visible", old_vanilla_part);
-
-figuraMetatables.VanillaPart.__index = setmetatable(new_vanilla_part, {__index=old_vanilla_part});
-
-local old_vanilla_model_part = figuraMetatables.VanillaModelPart.__index;
-
-local new_vanilla_model_part = {};
-new_vanilla_model_part.offsetRot = vp_wrapper(old_vanilla_model_part.offsetRot, "offsetRot", old_vanilla_model_part);
-new_vanilla_model_part.offsetScale = vp_wrapper(old_vanilla_model_part.offsetScale, "offsetScale", old_vanilla_model_part);
-new_vanilla_model_part.pos = vp_wrapper(old_vanilla_model_part.pos, "pos", old_vanilla_model_part);
-new_vanilla_model_part.rot = vp_wrapper(old_vanilla_model_part.rot, "rot", old_vanilla_model_part);
-new_vanilla_model_part.scale = vp_wrapper(old_vanilla_model_part.scale, "scale", old_vanilla_model_part);
-new_vanilla_model_part.visible = vp_wrapper(old_vanilla_model_part.visible, "visible", old_vanilla_model_part);
-new_vanilla_model_part.setOffsetRot = vp_wrapper(old_vanilla_model_part.offsetRot, "offsetRot", old_vanilla_model_part);
-new_vanilla_model_part.setOffsetScale = vp_wrapper(old_vanilla_model_part.offsetScale, "offsetScale", old_vanilla_model_part);
-new_vanilla_model_part.setPos = vp_wrapper(old_vanilla_model_part.pos, "pos", old_vanilla_model_part);
-new_vanilla_model_part.setRot = vp_wrapper(old_vanilla_model_part.rot, "rot", old_vanilla_model_part);
-new_vanilla_model_part.setScale = vp_wrapper(old_vanilla_model_part.scale, "scale", old_vanilla_model_part);
-new_vanilla_model_part.setVisible = vp_wrapper(old_vanilla_model_part.visible, "visible", old_vanilla_model_part);
-
-figuraMetatables.VanillaModelPart.__index = setmetatable(new_vanilla_model_part, {__index=old_vanilla_model_part});
-
-local old_vanilla_model_group = figuraMetatables.VanillaModelGroup.__index;
-
-local new_vanilla_model_group = {};
-new_vanilla_model_group.offsetRot = vp_wrapper("offsetRot", "offsetRot", old_vanilla_model_group);
-new_vanilla_model_group.offsetScale = vp_wrapper("offsetScale", "offsetScale", old_vanilla_model_group);
-new_vanilla_model_group.pos = vp_wrapper("pos", "pos", old_vanilla_model_group);
-new_vanilla_model_group.rot = vp_wrapper("rot", "rot", old_vanilla_model_group);
-new_vanilla_model_group.scale = vp_wrapper("scale", "scale", old_vanilla_model_group);
-new_vanilla_model_group.visible = vp_wrapper("visible", "visible", old_vanilla_model_group);
-new_vanilla_model_group.setOffsetRot = vp_wrapper("offsetRot", "offsetRot", old_vanilla_model_group);
-new_vanilla_model_group.setOffsetScale = vp_wrapper("offsetScale", "offsetScale", old_vanilla_model_group);
-new_vanilla_model_group.setPos = vp_wrapper("pos", "pos", old_vanilla_model_group);
-new_vanilla_model_group.setRot = vp_wrapper("rot", "rot", old_vanilla_model_group);
-new_vanilla_model_group.setScale = vp_wrapper("scale", "scale", old_vanilla_model_group);
-new_vanilla_model_group.setVisible = vp_wrapper("visible", "visible", old_vanilla_model_group);
-
-figuraMetatables.VanillaModelGroup.__index = setmetatable(new_vanilla_model_group, {__index=old_vanilla_model_group});
-
 --#endregion
 
 --#region REDEFINING NAMEPLATE CLASS BEHAVIOR
-local function np_wrapper(func, field)
-    return function (self, ...)
-        local ret = func(self, ...);
+local old_entity_nameplate;
+if modules.nameplates then
+    local function np_wrapper(func, field)
+        return function (self, ...)
+            local ret = func(self, ...);
+            local cur_env = env_control.current_env();
+            local args = {...};
+            cur_env.nameplates.entity[field] = args;
+            return ret;
+        end
+    end
+    
+    old_entity_nameplate = figuraMetatables.EntityNameplateCustomization.__index;
+    
+    local new_entity_nameplate = {};
+    new_entity_nameplate.setPos = np_wrapper(old_entity_nameplate.setPos, "setPos");
+    new_entity_nameplate.setScale = np_wrapper(old_entity_nameplate.setScale, "setScale");
+    new_entity_nameplate.setPivot = np_wrapper(old_entity_nameplate.setPivot, "setPivot");
+    new_entity_nameplate.setOutline = np_wrapper(old_entity_nameplate.setOutline, "setOutline");
+    new_entity_nameplate.setOutlineColor = np_wrapper(old_entity_nameplate.setOutlineColor, "setOutlineColor");
+    new_entity_nameplate.setBackgroundColor = np_wrapper(old_entity_nameplate.setBackgroundColor, "setBackgroundColor");
+    new_entity_nameplate.setLight = np_wrapper(old_entity_nameplate.setLight, "setLight");
+    new_entity_nameplate.setShadow = np_wrapper(old_entity_nameplate.setShadow, "setShadow");
+    new_entity_nameplate.setVisible = np_wrapper(old_entity_nameplate.setVisible, "setVisible");
+    new_entity_nameplate.setText = np_wrapper(old_entity_nameplate.setText, "setText");
+    new_entity_nameplate.pos = np_wrapper(old_entity_nameplate.setPos, "setPos");
+    new_entity_nameplate.scale = np_wrapper(old_entity_nameplate.setScale, "setScale");
+    new_entity_nameplate.pivot = np_wrapper(old_entity_nameplate.setPivot, "setPivot");
+    new_entity_nameplate.outline = np_wrapper(old_entity_nameplate.setOutline, "setOutline");
+    new_entity_nameplate.outlineColor = np_wrapper(old_entity_nameplate.setOutlineColor, "setOutlineColor");
+    new_entity_nameplate.backgroundColor = np_wrapper(old_entity_nameplate.setBackgroundColor, "setBackgroundColor");
+    new_entity_nameplate.light = np_wrapper(old_entity_nameplate.setLight, "setLight");
+    new_entity_nameplate.shadow = np_wrapper(old_entity_nameplate.setShadow, "setShadow");
+    new_entity_nameplate.visible = np_wrapper(old_entity_nameplate.setVisible, "setVisible");
+    
+    figuraMetatables.EntityNameplateCustomization.__index = setmetatable(new_entity_nameplate, {__index=old_entity_nameplate})
+    
+    local old_group_nameplate = figuraMetatables.NameplateCustomizationGroup.__index;
+    
+    local new_group_nameplate = {};
+    
+    function new_group_nameplate:setText(...)
+        local ret = old_group_nameplate.setText(self, ...);
         local cur_env = env_control.current_env();
-        local args = {...};
-        cur_env.nameplates.entity[field] = args;
+        cur_env.nameplates.entity.setText = {...};
         return ret;
     end
+    
+    figuraMetatables.NameplateCustomizationGroup.__index = setmetatable(new_group_nameplate, {__index=old_group_nameplate});     
 end
-
-local old_entity_nameplate = figuraMetatables.EntityNameplateCustomization.__index;
-
-local new_entity_nameplate = {};
-new_entity_nameplate.setPos = np_wrapper(old_entity_nameplate.setPos, "setPos");
-new_entity_nameplate.setScale = np_wrapper(old_entity_nameplate.setScale, "setScale");
-new_entity_nameplate.setPivot = np_wrapper(old_entity_nameplate.setPivot, "setPivot");
-new_entity_nameplate.setOutline = np_wrapper(old_entity_nameplate.setOutline, "setOutline");
-new_entity_nameplate.setOutlineColor = np_wrapper(old_entity_nameplate.setOutlineColor, "setOutlineColor");
-new_entity_nameplate.setBackgroundColor = np_wrapper(old_entity_nameplate.setBackgroundColor, "setBackgroundColor");
-new_entity_nameplate.setLight = np_wrapper(old_entity_nameplate.setLight, "setLight");
-new_entity_nameplate.setShadow = np_wrapper(old_entity_nameplate.setShadow, "setShadow");
-new_entity_nameplate.setVisible = np_wrapper(old_entity_nameplate.setVisible, "setVisible");
-new_entity_nameplate.setText = np_wrapper(old_entity_nameplate.setText, "setText");
-new_entity_nameplate.pos = np_wrapper(old_entity_nameplate.setPos, "setPos");
-new_entity_nameplate.scale = np_wrapper(old_entity_nameplate.setScale, "setScale");
-new_entity_nameplate.pivot = np_wrapper(old_entity_nameplate.setPivot, "setPivot");
-new_entity_nameplate.outline = np_wrapper(old_entity_nameplate.setOutline, "setOutline");
-new_entity_nameplate.outlineColor = np_wrapper(old_entity_nameplate.setOutlineColor, "setOutlineColor");
-new_entity_nameplate.backgroundColor = np_wrapper(old_entity_nameplate.setBackgroundColor, "setBackgroundColor");
-new_entity_nameplate.light = np_wrapper(old_entity_nameplate.setLight, "setLight");
-new_entity_nameplate.shadow = np_wrapper(old_entity_nameplate.setShadow, "setShadow");
-new_entity_nameplate.visible = np_wrapper(old_entity_nameplate.setVisible, "setVisible");
-
-figuraMetatables.EntityNameplateCustomization.__index = setmetatable(new_entity_nameplate, {__index=old_entity_nameplate})
-
-local old_group_nameplate = figuraMetatables.NameplateCustomizationGroup.__index;
-
-local new_group_nameplate = {};
-
-function new_group_nameplate:setText(...)
-    local ret = old_group_nameplate.setText(self, ...);
-    local cur_env = env_control.current_env();
-    cur_env.nameplates.entity.setText = {...};
-    return ret;
-end
-
-figuraMetatables.NameplateCustomizationGroup.__index = setmetatable(new_group_nameplate, {__index=old_group_nameplate});
-
 --#endregion
 
 ---Returns path components
@@ -548,10 +583,12 @@ end
 
 ---@param env EnvTable Environment
 function env_control.init_env(env)
-    -- Environment root is always not nil, except for ___ROOT___, which is never going through initialization.
-    local model_root = env.model_root --[[@as ModelPart]];
-    -- Setting root visibility to true at first initialization of environment
-    model_root:setVisible(true);
+    if modules.modelparts then
+        -- Environment root is always not nil, except for ___ROOT___, which is never going through initialization.
+        local model_root = env.model_root --[[@as ModelPart]];
+        -- Setting root visibility to true at first initialization of environment
+        model_root:setVisible(true);
+    end
 
     log(("Initializing %s"):format(env.id), "DEBUG");
     -- Initializing autoscripts
@@ -561,8 +598,8 @@ function env_control.init_env(env)
         -- If error occurred during initialization of any script - removing the environment. 
         if not success then
             log(environment_init_error:format(active_environment, error or "UNKNOWN"), "ERROR", active_environment);
-            env_control.remove_env(env.id);
             switch_environment(); -- Switching to root
+            env_control.remove_env(env.id);
             return;
         end
     end
@@ -626,27 +663,31 @@ function env_control.load_env(env)
         env_control.init_env(env);
     else
         -- Registering events for this environment
-        local handlers = env.events;
-        for event, handlers in pairs(handlers) do
-            for _, handler in ipairs(handlers) do
-                old_event.register(event, handler.f, handler.n);
+        if modules.events then
+            local handlers = env.events;
+            for event, handlers in pairs(handlers) do
+                for _, handler in ipairs(handlers) do
+                    old_event.register(event, handler.f, handler.n);
+                end
             end
         end
         
         -- Restoring action wheel page
-        action_wheel:setPage(env.action_wheel);
+        if modules.action_wheel then action_wheel:setPage(env.action_wheel); end
 
-        -- Restoring environment root visibility state
-        local model_root = env.model_root;
-        if model_root ~= nil then
-            model_root:setVisible(env.root_visibility);
+        if modules.modelparts then
+            -- Restoring environment root visibility state
+            local model_root = env.model_root;
+            if model_root ~= nil then
+                model_root:setVisible(env.root_visibility);
+            end
         end
 
-        restore_avatar_variables(env.avatar_vars);
-        restore_pings(env.pings);
-        restore_keybinds(env);
-        restore_parts(env);
-        restore_nameplates(env);
+        if modules.avatar_vars then restore_avatar_variables(env.avatar_vars); end
+        if modules.pings then restore_pings(env.pings); end
+        if modules.keybinds then restore_keybinds(env); end
+        if modules.vanilla_parts then restore_parts(env); end
+        if modules.nameplates then restore_nameplates(env); end
     end
 end
 
@@ -698,28 +739,33 @@ end
 
 ---@param env EnvTable Environment
 function env_control.unload_env(env)
-    -- Unregistering current environment events
-    for event, _ in pairs(env.events) do
-        old_event.clear(event);
+    if modules.events then
+        -- Unregistering current environment events
+        for event, _ in pairs(env.events) do
+            old_event.clear(event);
+        end
     end
-    -- Saving current action wheel page
-    env.action_wheel = action_wheel:getCurrentPage();
-
-    local model_root = env.model_root;
-    if model_root ~= nil then -- Checking if environment root is nil (for example, for ___ROOT___ it is nil)
-        local visible = model_root:getVisible();
-        -- Saving visibility state of this environment root
-        env.root_visibility = visible;
-        model_root:setVisible(false);
+    if modules.action_wheel then
+        -- Saving current action wheel page
+        env.action_wheel = action_wheel:getCurrentPage();
+        -- Setting current action wheel page to nil
+        action_wheel:setPage(nil);
     end
 
-    env.avatar_vars = clear_avatar_variables();
-    clear_pings(env.pings);
-    clear_keybinds(env);
-    clear_parts(env);
-    clear_nameplates(env);
-    -- Setting current action wheel page to nil
-    action_wheel:setPage(nil);
+    if modules.modelparts then
+        local model_root = env.model_root;
+        if model_root ~= nil then -- Checking if environment root is nil (for example, for ___ROOT___ it is nil)
+            local visible = model_root:getVisible();
+            -- Saving visibility state of this environment root
+            env.root_visibility = visible;
+            model_root:setVisible(false);
+        end
+    end
+    if modules.avatar_vars then env.avatar_vars = clear_avatar_variables(); end
+    if modules.pings then clear_pings(env.pings); end
+    if modules.keybinds then clear_keybinds(env); end
+    if modules.vanilla_parts then clear_parts(env); end
+    if modules.nameplates then clear_nameplates(env); end
 end
 
 function env_control.current_env()
@@ -729,21 +775,26 @@ end
 ---Switches the current environment
 ---@param name string? ID of the environment. Default - id of the root environment;
 function switch_environment(name)
-    local env_name = environment_id();
-    if env_name == name then
-        return;
+    local name = name or "___ROOT___";
+    if environments[name] ~= nil then
+        local env_name = environment_id();
+        if env_name == name then
+            return;
+        end
+
+        local old_env = env_control.current_env();
+        env_control.unload_env(old_env);
+
+        active_environment = name;
+
+        local new_env = env_control.current_env();
+
+        env_control.load_env(new_env);
+
+        log("Switched environment", "DEBUG", active_environment);
+    else
+        log(("Environment with id \"%s\" does not exist."):format(name), "ERROR", environment_id());
     end
-
-    local old_env = env_control.current_env();
-    env_control.unload_env(old_env);
-
-    active_environment = name or "___ROOT___";
-
-    local new_env = env_control.current_env();
-
-    env_control.load_env(new_env);
-
-    log("Switched environment", "DEBUG", active_environment);
 end
 --#endregion
 
@@ -762,5 +813,9 @@ action_wheel:setPage(page);
 --#endregion
 
 require = env_require;
+
+if modules.shared then
+    __SHARED = {}
+end
 
 switch_environment(default_environment);
