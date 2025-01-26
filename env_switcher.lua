@@ -64,6 +64,8 @@ log(("Global script directories: [ %s ]"):format(table.concat(global_script_dirs
 
 ---@alias EnvPart {values: table<string, table>, indexer: function}
 
+---@alias EnvNameplates { chat: string?, list: string?, entity: table<string, table> }
+
 ---@class EnvTable
 ---@field id string
 ---@field requires table<string, any[]>
@@ -78,6 +80,7 @@ log(("Global script directories: [ %s ]"):format(table.concat(global_script_dirs
 ---@field pings table<string, function>
 ---@field keybinds EnvKeybind[]
 ---@field vanilla_parts table<VanillaPart, EnvPart>
+---@field nameplates EnvNameplates
 ---@field initialized boolean
 
 local active_environment;
@@ -159,6 +162,7 @@ for i, env in ipairs(cfg.environments) do
         pings = {},
         keybinds = {},
         vanilla_parts = {},
+        nameplates = {entity = {}},
         initialized = false
     };
 
@@ -190,6 +194,7 @@ environments.___ROOT___ = {
     pings = {},
     keybinds = {},
     vanilla_parts = {},
+    nameplates = {entity = {}},
     initialized = true
 }
 
@@ -368,17 +373,6 @@ local function vp_wrapper(func, field, indexer)
     end
 end
 
-local function layered_index(first, second)
-    return function (self, index)
-        local v = type(first) == "function" and first(self, index) or first[index];
-        if v ~= nil then
-            return v;
-        else
-            return type(second) == "function" and second(self, index) or second[index];
-        end
-    end
-end
-
 local old_vanilla_part = figuraMetatables.VanillaPart.__index;
 
 local new_vanilla_part = {};
@@ -432,6 +426,57 @@ new_vanilla_model_group.setScale = vp_wrapper("scale", "scale", old_vanilla_mode
 new_vanilla_model_group.setVisible = vp_wrapper("visible", "visible", old_vanilla_model_group);
 
 figuraMetatables.VanillaModelGroup.__index = setmetatable(new_vanilla_model_group, {__index=old_vanilla_model_group});
+
+--#endregion
+
+--#region REDEFINING NAMEPLATE CLASS BEHAVIOR
+local function np_wrapper(func, field)
+    return function (self, ...)
+        local ret = func(self, ...);
+        local cur_env = env_control.current_env();
+        local args = {...};
+        cur_env.nameplates.entity[field] = args;
+        return ret;
+    end
+end
+
+local old_entity_nameplate = figuraMetatables.EntityNameplateCustomization.__index;
+
+local new_entity_nameplate = {};
+new_entity_nameplate.setPos = np_wrapper(old_entity_nameplate.setPos, "setPos");
+new_entity_nameplate.setScale = np_wrapper(old_entity_nameplate.setScale, "setScale");
+new_entity_nameplate.setPivot = np_wrapper(old_entity_nameplate.setPivot, "setPivot");
+new_entity_nameplate.setOutline = np_wrapper(old_entity_nameplate.setOutline, "setOutline");
+new_entity_nameplate.setOutlineColor = np_wrapper(old_entity_nameplate.setOutlineColor, "setOutlineColor");
+new_entity_nameplate.setBackgroundColor = np_wrapper(old_entity_nameplate.setBackgroundColor, "setBackgroundColor");
+new_entity_nameplate.setLight = np_wrapper(old_entity_nameplate.setLight, "setLight");
+new_entity_nameplate.setShadow = np_wrapper(old_entity_nameplate.setShadow, "setShadow");
+new_entity_nameplate.setVisible = np_wrapper(old_entity_nameplate.setVisible, "setVisible");
+new_entity_nameplate.setText = np_wrapper(old_entity_nameplate.setText, "setText");
+new_entity_nameplate.pos = np_wrapper(old_entity_nameplate.setPos, "setPos");
+new_entity_nameplate.scale = np_wrapper(old_entity_nameplate.setScale, "setScale");
+new_entity_nameplate.pivot = np_wrapper(old_entity_nameplate.setPivot, "setPivot");
+new_entity_nameplate.outline = np_wrapper(old_entity_nameplate.setOutline, "setOutline");
+new_entity_nameplate.outlineColor = np_wrapper(old_entity_nameplate.setOutlineColor, "setOutlineColor");
+new_entity_nameplate.backgroundColor = np_wrapper(old_entity_nameplate.setBackgroundColor, "setBackgroundColor");
+new_entity_nameplate.light = np_wrapper(old_entity_nameplate.setLight, "setLight");
+new_entity_nameplate.shadow = np_wrapper(old_entity_nameplate.setShadow, "setShadow");
+new_entity_nameplate.visible = np_wrapper(old_entity_nameplate.setVisible, "setVisible");
+
+figuraMetatables.EntityNameplateCustomization.__index = setmetatable(new_entity_nameplate, {__index=old_entity_nameplate})
+
+local old_group_nameplate = figuraMetatables.NameplateCustomizationGroup.__index;
+
+local new_group_nameplate = {};
+
+function new_group_nameplate:setText(...)
+    local ret = old_group_nameplate.setText(self, ...);
+    local cur_env = env_control.current_env();
+    cur_env.nameplates.entity.setText = {...};
+    return ret;
+end
+
+figuraMetatables.NameplateCustomizationGroup.__index = setmetatable(new_group_nameplate, {__index=old_group_nameplate});
 
 --#endregion
 
@@ -564,6 +609,17 @@ local function restore_parts(env)
     end
 end
 
+---@param env EnvTable
+local function restore_nameplates(env)
+    nameplate.CHAT:setText(env.nameplates.chat);
+    nameplate.LIST:setText(env.nameplates.list);
+    local entity_nameplate = nameplate.ENTITY;
+    for field, value in pairs(env.nameplates.entity) do
+        local func = old_entity_nameplate[field];
+        func(entity_nameplate, table.unpack(value))
+    end
+end
+
 ---@param env EnvTable Environment
 function env_control.load_env(env)
     if not env.initialized then
@@ -590,6 +646,7 @@ function env_control.load_env(env)
         restore_pings(env.pings);
         restore_keybinds(env);
         restore_parts(env);
+        restore_nameplates(env);
     end
 end
 
@@ -626,6 +683,19 @@ local function clear_parts(env)
     end
 end
 
+---@param env EnvTable
+local function clear_nameplates(env)
+    env.nameplates.chat = nameplate.CHAT:getText();
+    nameplate.CHAT:setText(nil);
+    env.nameplates.list = nameplate.LIST:getText();
+    nameplate.LIST:setText(nil);
+    local entity_nameplate = nameplate.ENTITY;
+    for field, _ in pairs(env.nameplates.entity) do
+        local func = old_entity_nameplate[field];
+        func(entity_nameplate)
+    end
+end
+
 ---@param env EnvTable Environment
 function env_control.unload_env(env)
     -- Unregistering current environment events
@@ -647,6 +717,7 @@ function env_control.unload_env(env)
     clear_pings(env.pings);
     clear_keybinds(env);
     clear_parts(env);
+    clear_nameplates(env);
     -- Setting current action wheel page to nil
     action_wheel:setPage(nil);
 end
