@@ -11,6 +11,7 @@ local modules = {
     ordered_vanilla_parts = false,
     nameplates = true,
     host = true,
+    renderer = true,
     shared = false
 };
 
@@ -85,13 +86,15 @@ log(("Global script directories: [ %s ]"):format(table.concat(global_script_dirs
 
 ---@alias EnvKeybind {kb: Keybind, state: boolean}
 
----@alias EnvPartHolder {part: VanillaPart, indexer: function, fields: {field: string, args: any[]}[]}
+---@alias EnvPartHolder {part: VanillaPart, indexer: function, fields: EnvFieldHolder[]}
 
 ---@alias EnvPart {values: table<string, table>, indexer: function}
 
 ---@alias EnvNameplates { chat: string?, list: string?, entity: table<string, table> }
 
 ---@alias EnvHost { unlock_cursor: boolean, chat_color: table }
+
+---@alias EnvFieldHolder {field: string, args: any[]}
 
 ---@class EnvTable
 ---@field id string
@@ -110,6 +113,7 @@ log(("Global script directories: [ %s ]"):format(table.concat(global_script_dirs
 ---@field ordered_vanilla_parts EnvPartHolder[]
 ---@field nameplates EnvNameplates
 ---@field host EnvHost
+---@field renderer EnvFieldHolder[]
 ---@field initialized boolean
 
 local active_environment;
@@ -198,6 +202,7 @@ for i, env in ipairs(cfg.environments) do
         ordered_vanilla_parts = {},
         nameplates = {entity = {}},
         host = { unlock_cursor = true, chat_color = {} },
+        renderer = {},
         initialized = false
     };
 
@@ -234,6 +239,7 @@ environments.___ROOT___ = {
     ordered_vanilla_parts = {},
     nameplates = {entity = {}},
     host = { unlock_cursor = true, chat_color = {} },
+    renderer = {},
     initialized = true
 }
 
@@ -496,64 +502,55 @@ if modules.vanilla_parts then
                 local cur_env = env_control.current_env();
                 local args = {...};
                 local saves = cur_env.vanilla_parts[part] or {values = {}, indexer = indexer};
-                saves.values[field] = args;
+                saves.values[field] = #args > 0 and args or nil;
                 cur_env.vanilla_parts[part] = saves;
                 return ret;
             end
         end
     end
+
+    local vanilla_part_fields = {
+        setOffsetRot = { "offsetRot", "setOffsetRot" },
+        setOffsetScale = { "offsetScale", "setOffsetScale" },
+        setPos = { "pos", "setPos" },
+        setRot = { "rot", "setRot" },
+        setScale = { "scale", "setScale" },
+        setVisible = { "visible", "setVisible" },
+    }
     
     local old_vanilla_part = figuraMetatables.VanillaPart.__index;
     
     local new_vanilla_part = {};
-    new_vanilla_part.offsetRot = vp_wrapper(old_vanilla_part.offsetRot, "offsetRot", old_vanilla_part);
-    new_vanilla_part.offsetScale = vp_wrapper(old_vanilla_part.offsetScale, "offsetScale", old_vanilla_part);
-    new_vanilla_part.pos = vp_wrapper(old_vanilla_part.pos, "pos", old_vanilla_part);
-    new_vanilla_part.rot = vp_wrapper(old_vanilla_part.rot, "rot", old_vanilla_part);
-    new_vanilla_part.scale = vp_wrapper(old_vanilla_part.scale, "scale", old_vanilla_part);
-    new_vanilla_part.visible = vp_wrapper(old_vanilla_part.visible, "visible", old_vanilla_part);
-    new_vanilla_part.setOffsetRot = vp_wrapper(old_vanilla_part.offsetRot, "offsetRot", old_vanilla_part);
-    new_vanilla_part.setOffsetScale = vp_wrapper(old_vanilla_part.offsetScale, "offsetScale", old_vanilla_part);
-    new_vanilla_part.setPos = vp_wrapper(old_vanilla_part.pos, "pos", old_vanilla_part);
-    new_vanilla_part.setRot = vp_wrapper(old_vanilla_part.rot, "rot", old_vanilla_part);
-    new_vanilla_part.setScale = vp_wrapper(old_vanilla_part.scale, "scale", old_vanilla_part);
-    new_vanilla_part.setVisible = vp_wrapper(old_vanilla_part.visible, "visible", old_vanilla_part);
+
+    for key, fields in pairs(vanilla_part_fields) do
+        for _, field in ipairs(fields) do
+            new_vanilla_part[field] = vp_wrapper(old_vanilla_part[key], key, old_vanilla_part);
+        end
+    end
     
     figuraMetatables.VanillaPart.__index = setmetatable(new_vanilla_part, {__index=old_vanilla_part});
     
     local old_vanilla_model_part = figuraMetatables.VanillaModelPart.__index;
     
     local new_vanilla_model_part = {};
-    new_vanilla_model_part.offsetRot = vp_wrapper(old_vanilla_model_part.offsetRot, "offsetRot", old_vanilla_model_part);
-    new_vanilla_model_part.offsetScale = vp_wrapper(old_vanilla_model_part.offsetScale, "offsetScale", old_vanilla_model_part);
-    new_vanilla_model_part.pos = vp_wrapper(old_vanilla_model_part.pos, "pos", old_vanilla_model_part);
-    new_vanilla_model_part.rot = vp_wrapper(old_vanilla_model_part.rot, "rot", old_vanilla_model_part);
-    new_vanilla_model_part.scale = vp_wrapper(old_vanilla_model_part.scale, "scale", old_vanilla_model_part);
-    new_vanilla_model_part.visible = vp_wrapper(old_vanilla_model_part.visible, "visible", old_vanilla_model_part);
-    new_vanilla_model_part.setOffsetRot = vp_wrapper(old_vanilla_model_part.offsetRot, "offsetRot", old_vanilla_model_part);
-    new_vanilla_model_part.setOffsetScale = vp_wrapper(old_vanilla_model_part.offsetScale, "offsetScale", old_vanilla_model_part);
-    new_vanilla_model_part.setPos = vp_wrapper(old_vanilla_model_part.pos, "pos", old_vanilla_model_part);
-    new_vanilla_model_part.setRot = vp_wrapper(old_vanilla_model_part.rot, "rot", old_vanilla_model_part);
-    new_vanilla_model_part.setScale = vp_wrapper(old_vanilla_model_part.scale, "scale", old_vanilla_model_part);
-    new_vanilla_model_part.setVisible = vp_wrapper(old_vanilla_model_part.visible, "visible", old_vanilla_model_part);
+
+    for key, fields in pairs(vanilla_part_fields) do
+        for _, field in ipairs(fields) do
+            new_vanilla_model_part[field] = vp_wrapper(old_vanilla_model_part[key], key, old_vanilla_model_part);
+        end
+    end
     
     figuraMetatables.VanillaModelPart.__index = setmetatable(new_vanilla_model_part, {__index=old_vanilla_model_part});
     
     local old_vanilla_model_group = figuraMetatables.VanillaModelGroup.__index;
     
     local new_vanilla_model_group = {};
-    new_vanilla_model_group.offsetRot = vp_wrapper("offsetRot", "offsetRot", old_vanilla_model_group);
-    new_vanilla_model_group.offsetScale = vp_wrapper("offsetScale", "offsetScale", old_vanilla_model_group);
-    new_vanilla_model_group.pos = vp_wrapper("pos", "pos", old_vanilla_model_group);
-    new_vanilla_model_group.rot = vp_wrapper("rot", "rot", old_vanilla_model_group);
-    new_vanilla_model_group.scale = vp_wrapper("scale", "scale", old_vanilla_model_group);
-    new_vanilla_model_group.visible = vp_wrapper("visible", "visible", old_vanilla_model_group);
-    new_vanilla_model_group.setOffsetRot = vp_wrapper("offsetRot", "offsetRot", old_vanilla_model_group);
-    new_vanilla_model_group.setOffsetScale = vp_wrapper("offsetScale", "offsetScale", old_vanilla_model_group);
-    new_vanilla_model_group.setPos = vp_wrapper("pos", "pos", old_vanilla_model_group);
-    new_vanilla_model_group.setRot = vp_wrapper("rot", "rot", old_vanilla_model_group);
-    new_vanilla_model_group.setScale = vp_wrapper("scale", "scale", old_vanilla_model_group);
-    new_vanilla_model_group.setVisible = vp_wrapper("visible", "visible", old_vanilla_model_group);
+
+    for key, fields in pairs(vanilla_part_fields) do
+        for _, field in ipairs(fields) do
+            new_vanilla_model_group[field] = vp_wrapper(key, key, old_vanilla_model_group);
+        end
+    end
     
     figuraMetatables.VanillaModelGroup.__index = setmetatable(new_vanilla_model_group, {__index=old_vanilla_model_group});     
 end
@@ -571,29 +568,29 @@ if modules.nameplates then
             return ret;
         end
     end
+
+    local nameplate_fields = {
+        setPos = { "pos", "setPos" },
+        setScale = { "scale", "setScale" },
+        setPivot = { "pivot", "setPivot" },
+        setOutline = { "outline", "setOutline" },
+        setOutlineColor = { "outlineColor", "setOutlineColor" },
+        setBackgroundColor = { "backgroundColor", "setBackgroundColor" },
+        setLight = { "light", "setLight" },
+        setShadow = { "shadow", "setShadow" },
+        setVisible = { "visible", "setVisible" },
+        setText = { "setText" },
+    }
     
     old_entity_nameplate = figuraMetatables.EntityNameplateCustomization.__index;
     
     local new_entity_nameplate = {};
-    new_entity_nameplate.setPos = np_wrapper(old_entity_nameplate.setPos, "setPos");
-    new_entity_nameplate.setScale = np_wrapper(old_entity_nameplate.setScale, "setScale");
-    new_entity_nameplate.setPivot = np_wrapper(old_entity_nameplate.setPivot, "setPivot");
-    new_entity_nameplate.setOutline = np_wrapper(old_entity_nameplate.setOutline, "setOutline");
-    new_entity_nameplate.setOutlineColor = np_wrapper(old_entity_nameplate.setOutlineColor, "setOutlineColor");
-    new_entity_nameplate.setBackgroundColor = np_wrapper(old_entity_nameplate.setBackgroundColor, "setBackgroundColor");
-    new_entity_nameplate.setLight = np_wrapper(old_entity_nameplate.setLight, "setLight");
-    new_entity_nameplate.setShadow = np_wrapper(old_entity_nameplate.setShadow, "setShadow");
-    new_entity_nameplate.setVisible = np_wrapper(old_entity_nameplate.setVisible, "setVisible");
-    new_entity_nameplate.setText = np_wrapper(old_entity_nameplate.setText, "setText");
-    new_entity_nameplate.pos = np_wrapper(old_entity_nameplate.setPos, "setPos");
-    new_entity_nameplate.scale = np_wrapper(old_entity_nameplate.setScale, "setScale");
-    new_entity_nameplate.pivot = np_wrapper(old_entity_nameplate.setPivot, "setPivot");
-    new_entity_nameplate.outline = np_wrapper(old_entity_nameplate.setOutline, "setOutline");
-    new_entity_nameplate.outlineColor = np_wrapper(old_entity_nameplate.setOutlineColor, "setOutlineColor");
-    new_entity_nameplate.backgroundColor = np_wrapper(old_entity_nameplate.setBackgroundColor, "setBackgroundColor");
-    new_entity_nameplate.light = np_wrapper(old_entity_nameplate.setLight, "setLight");
-    new_entity_nameplate.shadow = np_wrapper(old_entity_nameplate.setShadow, "setShadow");
-    new_entity_nameplate.visible = np_wrapper(old_entity_nameplate.setVisible, "setVisible");
+
+    for key, fields in pairs(nameplate_fields) do
+        for _, field in ipairs(fields) do
+            new_entity_nameplate[field] = np_wrapper(old_entity_nameplate[key], key);
+        end
+    end
     
     figuraMetatables.EntityNameplateCustomization.__index = setmetatable(new_entity_nameplate, {__index=old_entity_nameplate})
     
@@ -636,7 +633,105 @@ end
 --#endregion
 
 --#region REDEFINING RENDERER CLASS BEHAVIOR
+local old_renderer;
+if modules.renderer then
+    ---@param fields EnvFieldHolder[]
+    ---@param field string
+    ---@param create boolean?
+    local function find_field(fields, field, create)
+        for i, f in ipairs(fields) do
+            if f.field == field then
+                -- Moving the field to the top, and returning it.
+                table.remove(fields, i);
+                fields[#fields+1] = f;
+                return f;
+            end
+        end
+        if create then
+            -- Creating the field, pushing it to the top, and returning it.
+            local field = {field = field, args = {}};;
+            fields[#fields+1] = field;
+            return field;
+        end
+    end
 
+    local function r_wrapper(func, field)
+        return function (self, ...)
+            local cur_env = env_control.current_env();
+            local ret = func(self, ...);
+            local args = {...};
+            local rnd = cur_env.renderer;
+            if #args > 0 then
+                local field = find_field(rnd, field, true);
+                field.args = args;
+            else
+                if find_field(rnd, field) ~= nil then
+                    rnd[#rnd] = nil;
+                end
+            end
+            return ret;
+        end
+    end
+
+    local renderer_fields = {
+        setBlockOutlineColor = {"setBlockOutlineColor", "blockOutlineColor"},
+        setCameraMatrix = {"setCameraMatrix", "cameraMatrix"},
+        setCameraNormal = {"setCameraNormal", "cameraNormal"},
+        setCameraPivot = {"setCameraPivot", "cameraPivot"},
+        setCameraPos = {"setCameraPos", "cameraPos"},
+        setCameraRot = {"setCameraRot", "cameraRot"},
+        setCrosshairOffset = {"setCrosshairOffset", "crosshairOffset"},
+        setEyeOffset = {"setEyeOffset", "eyeOffset"},
+        setFOV = {"setFOV", "fov"},
+        setForcePaperdoll = {"setForcePaperdoll", "forcePaperdoll"},
+        setOffsetCameraPivot = {"setOffsetCameraPivot", "offsetCameraPivot"},
+        setOffsetCameraRot = {"setOffsetCameraRot", "setOffsetCameraRot"},
+        setOutlineColor = {"setOutlineColor", "outlineColor"},
+        setPostEffect = {"setPostEffect", "postEffect"},
+        setPrimaryFireTexture = {"setPrimaryFireTexture", "primaryFireTexture"},
+        setRenderCrosshair = {"setRenderCrosshair", "renderCrosshair"},
+        setRenderFire = {"setRenderFire", "renderFire"},
+        setRenderHUD = {"setRenderHUD", "renderHUD"},
+        setRenderLeftArm = {"setRenderLeftArm", "renderLeftArm"},
+        setRenderRightArm = {"setRenderRightArm", "renderRightArm"},
+        setRenderVehicle = {"setRenderVehicle", "renderVehicle"},
+        setRootRotationAllowed = {"setRootRotationAllowed", "rootRotationAllowed"},
+        setSecondaryFireTexture = {"setSecondaryFireTexture", "secondaryFireTexture"},
+        setShadowRadius = {"setShadowRadius", "shadowRadius"},
+        setUpsideDown = {"setUpsideDown", "upsideDown"}
+    };
+
+    old_renderer = figuraMetatables.RendererAPI.__index;
+
+    local field_to_funcs = {};
+
+    local new_renderer = {};
+    for key, fields in pairs(renderer_fields) do
+        for _, field in ipairs(fields) do
+            local func = old_renderer(renderer, key);
+            local f = old_renderer(renderer, field);
+            local f_type = type(f);
+            if f_type == "function" then
+                new_renderer[field] = r_wrapper(func, key);
+            else
+                field_to_funcs[field] = key;
+            end
+        end
+    end
+
+    figuraMetatables.RendererAPI.__index = setmetatable(new_renderer, {__index = old_renderer});
+
+    local old_renderer_new_index = figuraMetatables.RendererAPI.__newindex;
+
+    function figuraMetatables.RendererAPI.__newindex(self, key, value)
+        local func_name = field_to_funcs[key];
+        if func_name ~= nil then
+            new_renderer[func_name](self, value);
+        else
+            old_renderer_new_index(self, key, value);
+        end
+    end
+end
 --#endregion
 
 ---Returns path components
@@ -760,7 +855,6 @@ local function restore_keybinds(env)
     end
 end
 
----comment
 ---@param env EnvTable
 local function restore_parts(env)
     if modules.ordered_vanilla_parts then
@@ -798,6 +892,13 @@ local function restore_host(env)
     old_host.setChatColor(host, table.unpack(env_host.chat_color));
 end
 
+---@param env EnvTable
+local function restore_renderer(env)
+    for _, field in ipairs(env.renderer) do
+        index(renderer, old_renderer, field.field)(renderer, table.unpack(field.args));
+    end
+end
+
 ---@param env EnvTable Environment
 function env_control.load_env(env)
     if not env.initialized then
@@ -830,6 +931,7 @@ function env_control.load_env(env)
         if modules.vanilla_parts then restore_parts(env); end
         if modules.nameplates then restore_nameplates(env); end
         if modules.host then restore_host(env); end
+        if modules.renderer then restore_renderer(env); end
     end
 end
 
@@ -895,6 +997,13 @@ local function clear_host(env)
     old_host.setChatColor(host);
 end
 
+---@param env EnvTable
+local function restore_renderer(env)
+    for _, field in ipairs(env.renderer) do
+        index(renderer, old_renderer, field.field)(renderer);
+    end
+end
+
 ---@param env EnvTable Environment
 function env_control.unload_env(env)
     if modules.events then
@@ -925,6 +1034,7 @@ function env_control.unload_env(env)
     if modules.vanilla_parts then clear_parts(env); end
     if modules.nameplates then clear_nameplates(env); end
     if modules.host then clear_host(env); end
+    if modules.renderer then restore_renderer(env); end
 end
 
 function env_control.current_env()
